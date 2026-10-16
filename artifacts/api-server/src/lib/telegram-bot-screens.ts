@@ -260,15 +260,86 @@ export function redeemUnavailableScreen(): BotScreen {
   );
 }
 
-export function topUpUnavailableScreen(): BotScreen {
+export function topUpScreen(): BotScreen {
+  return screen(
+    [
+      "<b>💵 Top up</b>",
+      divider,
+      "💰 Balance ▹ $0.00",
+      "🕒 Last time ▹",
+      "💵 Amounts ▹ $1 to $10,000",
+      divider,
+      "",
+      "💡 <b>Pick an amount</b>",
+      "Tap one of the amounts, or Custom amount to type your own. A secure payment link will be available after payment setup is connected; your balance will be credited only after confirmation.",
+      "",
+      "⚠️ Payment setup is not connected yet; no invoice will be created.",
+    ].join("\n"),
+    [
+      [
+        { text: "💵 $80", callback_data: "topup_80" },
+        { text: "💵 $150", callback_data: "topup_150" },
+      ],
+      [
+        { text: "💵 $200", callback_data: "topup_200" },
+        { text: "💵 $500", callback_data: "topup_500" },
+      ],
+      [{ text: "✏️ Custom amount", callback_data: "topup_custom" }],
+      [
+        { text: "◀️ Wallet", callback_data: "wallet" },
+        ...menuRow,
+      ],
+    ],
+  );
+}
+
+export function customTopUpAmountScreen(): BotScreen {
+  return screen(
+    [
+      "<b>✏️ Custom amount</b>",
+      divider,
+      "Enter an amount from $1 to $10,000.",
+      "You can include up to two decimal places.",
+      "",
+      "⚠️ Payments are not enabled yet; no invoice will be created.",
+    ].join("\n"),
+    [
+      [{ text: "❌ Cancel", callback_data: "topup_cancel" }],
+      menuRow,
+    ],
+  );
+}
+
+export function invalidTopUpAmountScreen(): BotScreen {
+  return screen(
+    [
+      "<b>❌ Amount not valid</b>",
+      divider,
+      "Enter an amount from $1 to $10,000, with up to two decimal places.",
+    ].join("\n"),
+    [
+      [{ text: "✏️ Try again", callback_data: "topup_custom" }],
+      [
+        { text: "💰 Wallet", callback_data: "wallet" },
+        ...menuRow,
+      ],
+    ],
+  );
+}
+
+export function topUpUnavailableScreen(amount?: number): BotScreen {
+  const amountLine =
+    amount === undefined ? "" : ` for ${money(amount)}`;
+
   return screen(
     [
       "<b>❌ Top-up isn't set up yet</b>",
       divider,
-      "No invoice was created and no payment was taken.",
+      `No invoice was created${amountLine} and no payment was taken.`,
       "Connect a crypto payment provider before sending funds.",
     ].join("\n"),
     [
+      [{ text: "↩️ Pick another amount", callback_data: "top_up" }],
       [{ text: "💰 Wallet", callback_data: "wallet" }],
       menuRow,
     ],

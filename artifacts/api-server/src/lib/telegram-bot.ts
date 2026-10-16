@@ -2,14 +2,17 @@ import { logger } from "./logger";
 import { db, telegramUsers } from "@workspace/db";
 import {
   accountScreen,
+  customTopUpAmountScreen,
   faqAnswerScreen,
   faqScreen,
   insufficientBalanceFor,
+  invalidTopUpAmountScreen,
   invoicesScreen,
   nineAppScreen,
   plansScreen,
   redeemCodeScreen,
   redeemUnavailableScreen,
+  topUpScreen,
   topUpUnavailableScreen,
   walletHistoryScreen,
   walletScreen,
@@ -114,6 +117,7 @@ async function saveTelegramUser(user: TelegramUser): Promise<TelegramUserProfile
 }
 
 const redeemingUserIds = new Set<number>();
+const enteringTopUpAmountUserIds = new Set<number>();
 
 async function answerCallback(
   token: string,
@@ -168,6 +172,7 @@ async function handleCallback(
   switch (callback.data) {
     case "menu":
       redeemingUserIds.delete(callback.from.id);
+      enteringTopUpAmountUserIds.delete(callback.from.id);
       await sendScreen(
         token,
         chatId,
@@ -178,6 +183,7 @@ async function handleCallback(
       await sendScreen(token, chatId, plansScreen());
       return;
     case "redeem_code":
+      enteringTopUpAmountUserIds.delete(callback.from.id);
       redeemingUserIds.add(callback.from.id);
       await sendScreen(token, chatId, redeemCodeScreen());
       return;
@@ -216,7 +222,25 @@ async function handleCallback(
       await sendScreen(token, chatId, faqAnswerScreen(callback.data));
       return;
     case "top_up":
-      await sendScreen(token, chatId, topUpUnavailableScreen());
+      enteringTopUpAmountUserIds.delete(callback.from.id);
+      await sendScreen(token, chatId, topUpScreen());
+      return;
+    case "topup_80":
+    case "topup_150":
+    case "topup_200":
+    case "topup_500": {
+      const amount = Number(callback.data.slice("topup_".length));
+      await sendScreen(token, chatId, topUpUnavailableScreen(amount));
+      return;
+    }
+    case "topup_custom":
+      redeemingUserIds.delete(callback.from.id);
+      enteringTopUpAmountUserIds.add(callback.from.id);
+      await sendScreen(token, chatId, customTopUpAmountScreen());
+      return;
+    case "topup_cancel":
+      enteringTopUpAmountUserIds.delete(callback.from.id);
+      await sendScreen(token, chatId, topUpScreen());
       return;
     case "plan_1_day":
     case "plan_2_day":
@@ -240,6 +264,7 @@ async function handleMessage(
 
   if (/^\/start(?:@\w+)?(?:\s|$)/i.test(text)) {
     redeemingUserIds.delete(user.id);
+    enteringTopUpAmountUserIds.delete(user.id);
     try {
       await saveTelegramUser(user);
     } catch {
@@ -250,6 +275,24 @@ async function handleMessage(
       message.chat.id,
       welcomeScreen(user.first_name, user.last_name),
     );
+    return;
+  }
+
+  if (enteringTopUpAmountUserIds.has(user.id)) {
+    enteringTopUpAmountUserIds.delete(user.id);
+    const normalized = text.replace(/[$,\s]/g, "");
+    if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) {
+      await sendScreen(token, message.chat.id, invalidTopUpAmountScreen());
+      return;
+    }
+
+    const amount = Number(normalized);
+    if (!Number.isFinite(amount) || amount < 1 || amount > 10_000) {
+      await sendScreen(token, message.chat.id, invalidTopUpAmountScreen());
+      return;
+    }
+
+    await sendScreen(token, message.chat.id, topUpUnavailableScreen(amount));
     return;
   }
 
