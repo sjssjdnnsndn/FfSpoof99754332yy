@@ -1,4 +1,23 @@
 import { logger } from "./logger";
+import { db, telegramUsers } from "@workspace/db";
+import {
+  accountScreen,
+  faqAnswerScreen,
+  faqScreen,
+  insufficientBalanceFor,
+  invoicesScreen,
+  nineAppScreen,
+  plansScreen,
+  redeemCodeScreen,
+  redeemUnavailableScreen,
+  topUpUnavailableScreen,
+  walletHistoryScreen,
+  walletScreen,
+  websiteNotConfiguredText,
+  welcomeScreen,
+  type BotScreen,
+} from "./telegram-bot-screens";
+import type { TelegramUser as TelegramUserProfile } from "@workspace/db";
 
 interface TelegramApiResponse<T> {
   ok: boolean;
@@ -6,8 +25,10 @@ interface TelegramApiResponse<T> {
 }
 
 interface TelegramUser {
-  first_name?: string;
+  id: number;
+  first_name: string;
   last_name?: string;
+  username?: string;
 }
 
 interface TelegramMessage {
@@ -20,6 +41,9 @@ interface TelegramMessage {
 
 interface TelegramCallbackQuery {
   id: string;
+  data?: string;
+  from: TelegramUser;
+  message?: TelegramMessage;
 }
 
 interface TelegramUpdate {
@@ -27,22 +51,6 @@ interface TelegramUpdate {
   message?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
 }
-
-const startKeyboard = {
-  inline_keyboard: [
-    [
-      { text: "💳 Buy Plan", callback_data: "buy_plan" },
-      { text: "🎁 Redeem Code", callback_data: "redeem_code" },
-    ],
-    [{ text: "💰 Wallet", callback_data: "wallet" }],
-    [
-      { text: "👤 Account", callback_data: "account" },
-      { text: "❓ FAQ", callback_data: "faq" },
-    ],
-    [{ text: "📲 Nine App", callback_data: "nine_app" }],
-    [{ text: "🌐 Website ↗", callback_data: "website" }],
-  ],
-};
 
 async function callTelegram<T>(
   token: string,
@@ -66,49 +74,202 @@ async function callTelegram<T>(
   return body.result;
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+async function sendScreen(
+  token: string,
+  chatId: number,
+  botScreen: BotScreen,
+): Promise<void> {
+  await callTelegram(token, "sendMessage", {
+    chat_id: chatId,
+    text: botScreen.text,
+    parse_mode: "HTML",
+    reply_markup: botScreen.reply_markup,
+  });
 }
 
-function welcomeMessage(user?: TelegramUser): string {
-  const name =
-    [user?.first_name, user?.last_name].filter(Boolean).join(" ") ||
-    "Bio Bhaiya";
-  const separator = "━━━━━━━━━━━━━━━━━━━━";
+async function saveTelegramUser(user: TelegramUser): Promise<TelegramUserProfile> {
+  const [profile] = await db
+    .insert(telegramUsers)
+    .values({
+      telegramId: user.id,
+      firstName: user.first_name,
+      lastName: user.last_name ?? null,
+      username: user.username ?? null,
+    })
+    .onConflictDoUpdate({
+      target: telegramUsers.telegramId,
+      set: {
+        firstName: user.first_name,
+        lastName: user.last_name ?? null,
+        username: user.username ?? null,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
 
-  return [
-    `<b>👋 Welcome back, ${escapeHtml(name)}!</b>`,
-    separator,
-    "📋 Plan ▹ None",
-    "⌛ Status ▹ No active subscription",
-    "💰 Wallet ▹ $0.00",
-    separator,
-    "",
-    "<i>💡 Pick a plan or redeem a code to get started.</i>",
-  ].join("\n");
+  if (!profile) {
+    throw new Error("Telegram profile could not be saved");
+  }
+  return profile;
+}
+
+const redeemingUserIds = new Set<number>();
+
+async function answerCallback(
+  token: string,
+  callback: TelegramCallbackQuery,
+  text?: string,
+): Promise<void> {
+  try {
+    await callTelegram(token, "answerCallbackQuery", {
+      callback_query_id: callback.id,
+      ...(text ? { text, show_alert: true } : {}),
+    });
+  } catch {
+    logger.warn("Could not acknowledge Telegram button callback");
+  }
+}
+
+async function showAccount(
+  token: string,
+  chatId: number,
+  user: TelegramUser,
+): Promise<void> {
+  try {
+    const profile = await saveTelegramUser(user);
+    await sendScreen(token, chatId, accountScreen(profile));
+  } catch {
+    logger.error("Could not load Telegram account details");
+    await sendScreen(token, chatId, {
+      text: "Account details are temporarily unavailable. Please try again.",
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "🏠 Menu", callback_data: "menu" }],
+        ],
+      },
+    });
+  }
+}
+
+async function handleCallback(
+  token: string,
+  callback: TelegramCallbackQuery,
+): Promise<void> {
+  if (callback.data === "website") {
+    await answerCallback(token, callback, websiteNotConfiguredText());
+    return;
+  }
+
+  await answerCallback(token, callback);
+
+  const chatId = callback.message?.chat.id;
+  if (!chatId) return;
+
+  switch (callback.data) {
+    case "menu":
+      redeemingUserIds.delete(callback.from.id);
+      await sendScreen(
+        token,
+        chatId,
+        welcomeScreen(callback.from.first_name, callback.from.last_name),
+      );
+      return;
+    case "buy_plan":
+      await sendScreen(token, chatId, plansScreen());
+      return;
+    case "redeem_code":
+      redeemingUserIds.add(callback.from.id);
+      await sendScreen(token, chatId, redeemCodeScreen());
+      return;
+    case "redeem_cancel":
+      redeemingUserIds.delete(callback.from.id);
+      await sendScreen(
+        token,
+        chatId,
+        welcomeScreen(callback.from.first_name, callback.from.last_name),
+      );
+      return;
+    case "wallet":
+      await sendScreen(token, chatId, walletScreen());
+      return;
+    case "wallet_history":
+      await sendScreen(token, chatId, walletHistoryScreen());
+      return;
+    case "invoices":
+      await sendScreen(token, chatId, invoicesScreen());
+      return;
+    case "account":
+      await showAccount(token, chatId, callback.from);
+      return;
+    case "nine_app":
+      await sendScreen(token, chatId, nineAppScreen());
+      return;
+    case "faq":
+      await sendScreen(token, chatId, faqScreen());
+      return;
+    case "faq_subscriptions":
+    case "faq_sip":
+    case "faq_app":
+    case "faq_payments":
+    case "faq_dtmf":
+    case "faq_refund":
+      await sendScreen(token, chatId, faqAnswerScreen(callback.data));
+      return;
+    case "top_up":
+      await sendScreen(token, chatId, topUpUnavailableScreen());
+      return;
+    case "plan_1_day":
+    case "plan_2_day":
+    case "plan_7_day": {
+      const planScreen = insufficientBalanceFor(callback.data);
+      if (planScreen) await sendScreen(token, chatId, planScreen);
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+async function handleMessage(
+  token: string,
+  message: TelegramMessage,
+): Promise<void> {
+  const text = message.text?.trim();
+  const user = message.from;
+  if (!text || !user) return;
+
+  if (/^\/start(?:@\w+)?(?:\s|$)/i.test(text)) {
+    redeemingUserIds.delete(user.id);
+    try {
+      await saveTelegramUser(user);
+    } catch {
+      logger.error("Could not save Telegram user profile");
+    }
+    await sendScreen(
+      token,
+      message.chat.id,
+      welcomeScreen(user.first_name, user.last_name),
+    );
+    return;
+  }
+
+  if (redeemingUserIds.has(user.id)) {
+    redeemingUserIds.delete(user.id);
+    await sendScreen(token, message.chat.id, redeemUnavailableScreen());
+  }
 }
 
 async function handleUpdate(
   token: string,
   update: TelegramUpdate,
 ): Promise<void> {
-  const text = update.message?.text;
-  if (text && /^\/start(?:@\w+)?(?:\s|$)/i.test(text)) {
-    await callTelegram(token, "sendMessage", {
-      chat_id: update.message!.chat.id,
-      text: welcomeMessage(update.message!.from),
-      parse_mode: "HTML",
-      reply_markup: startKeyboard,
-    });
+  if (update.callback_query) {
+    await handleCallback(token, update.callback_query);
+    return;
   }
 
-  if (update.callback_query) {
-    await callTelegram(token, "answerCallbackQuery", {
-      callback_query_id: update.callback_query.id,
-    });
+  if (update.message) {
+    await handleMessage(token, update.message);
   }
 }
 
