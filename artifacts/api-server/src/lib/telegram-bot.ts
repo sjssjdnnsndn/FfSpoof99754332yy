@@ -2,24 +2,51 @@ import { logger } from "./logger";
 import { db, telegramUsers } from "@workspace/db";
 import {
   accountScreen,
-  customTopUpAmountScreen,
   faqAnswerScreen,
   faqScreen,
   insufficientBalanceFor,
-  invalidTopUpAmountScreen,
   invoicesScreen,
   nineAppScreen,
   plansScreen,
   redeemCodeScreen,
   redeemUnavailableScreen,
-  topUpScreen,
-  topUpUnavailableScreen,
   walletHistoryScreen,
   walletScreen,
   websiteNotConfiguredText,
+  websiteLinkScreen,
   welcomeScreen,
   type BotScreen,
 } from "./telegram-bot-screens";
+import {
+  adminAddressInvalidScreen,
+  adminAddressPromptScreen,
+  adminAddressSavedScreen,
+  adminPanelScreen,
+  adminPrivateChatOnlyScreen,
+  adminStorageUnavailableScreen,
+  adminUnauthorizedScreen,
+  adminWebsiteInvalidScreen,
+  adminWebsitePromptScreen,
+  adminWebsiteSavedScreen,
+} from "./telegram-bot-admin-screens";
+import {
+  addressNotConfiguredScreen,
+  cryptoCurrencySelectionScreen,
+  customTopUpAmountScreen,
+  exchangeRateUnavailableScreen,
+  invalidTopUpAmountScreen,
+  topUpAddressScreen,
+  topUpQuoteUnavailableScreen,
+  topUpScreen,
+} from "./telegram-bot-payment-screens";
+import {
+  createTopUpQuote,
+  CryptoQuoteError,
+  getConfiguredPaymentMethods,
+  saveCryptoPaymentAddress,
+} from "./telegram-crypto";
+import { isCryptoCode, type CryptoCode } from "./telegram-crypto-currencies";
+import { getWebsiteUrl, saveWebsiteUrl } from "./telegram-website-settings";
 import type { TelegramUser as TelegramUserProfile } from "@workspace/db";
 
 interface TelegramApiResponse<T> {
@@ -38,6 +65,7 @@ interface TelegramMessage {
   text?: string;
   chat: {
     id: number;
+    type: string;
   };
   from?: TelegramUser;
 }
@@ -116,8 +144,11 @@ async function saveTelegramUser(user: TelegramUser): Promise<TelegramUserProfile
   return profile;
 }
 
+const ADMIN_TELEGRAM_ID = 6498333937;
 const redeemingUserIds = new Set<number>();
 const enteringTopUpAmountUserIds = new Set<number>();
+const pendingTopUpAmounts = new Map<number, number>();
+const configuringCryptoAddress = new Map<number, CryptoCode | "website">();
 
 async function answerCallback(
   token: string,
@@ -131,6 +162,45 @@ async function answerCallback(
     });
   } catch {
     logger.warn("Could not acknowledge Telegram button callback");
+  }
+}
+
+async function showAdminPanel(token: string, chatId: number): Promise<void> {
+  try {
+    const [configuredMethods, websiteUrl] = await Promise.all([
+      getConfiguredPaymentMethods(),
+      getWebsiteUrl(),
+    ]);
+    await sendScreen(
+      token,
+      chatId,
+      adminPanelScreen(
+        new Set(configuredMethods.map((method) => method.currencyCode)),
+        Boolean(websiteUrl),
+      ),
+    );
+  } catch {
+    logger.error("Could not load crypto address settings");
+    await sendScreen(token, chatId, adminStorageUnavailableScreen());
+  }
+}
+
+async function showWelcome(
+  token: string,
+  chatId: number,
+  firstName?: string,
+  lastName?: string,
+): Promise<void> {
+  try {
+    const websiteUrl = await getWebsiteUrl();
+    await sendScreen(
+      token,
+      chatId,
+      welcomeScreen(firstName, lastName, websiteUrl),
+    );
+  } catch {
+    logger.warn("Could not load the configured website link");
+    await sendScreen(token, chatId, welcomeScreen(firstName, lastName));
   }
 }
 
@@ -159,8 +229,36 @@ async function handleCallback(
   token: string,
   callback: TelegramCallbackQuery,
 ): Promise<void> {
+  const data = callback.data;
+  const isAdminAction = data?.startsWith("admin_") ?? false;
+  if (isAdminAction && callback.from.id !== ADMIN_TELEGRAM_ID) {
+    await answerCallback(token, callback, "Admin access only.");
+    return;
+  }
+  if (isAdminAction && callback.message?.chat.type !== "private") {
+    await answerCallback(token, callback, "Use the admin panel in a private chat.");
+    return;
+  }
+
   if (callback.data === "website") {
-    await answerCallback(token, callback, websiteNotConfiguredText());
+    let websiteUrl: string | undefined;
+    try {
+      websiteUrl = await getWebsiteUrl();
+    } catch {
+      logger.warn("Could not load the configured website link");
+      await answerCallback(token, callback, "The website link is unavailable right now.");
+      return;
+    }
+    if (!websiteUrl) {
+      await answerCallback(token, callback, websiteNotConfiguredText());
+      return;
+    }
+
+    await answerCallback(token, callback);
+    const websiteChatId = callback.message?.chat.id;
+    if (websiteChatId) {
+      await sendScreen(token, websiteChatId, websiteLinkScreen(websiteUrl));
+    }
     return;
   }
 
@@ -169,14 +267,63 @@ async function handleCallback(
   const chatId = callback.message?.chat.id;
   if (!chatId) return;
 
+  if (data === "admin_set_website") {
+    configuringCryptoAddress.set(callback.from.id, "website");
+    await sendScreen(token, chatId, adminWebsitePromptScreen());
+    return;
+  }
+
+  if (data?.startsWith("admin_set_")) {
+    const code = data.slice("admin_set_".length);
+    if (!isCryptoCode(code)) return;
+    configuringCryptoAddress.set(callback.from.id, code);
+    await sendScreen(token, chatId, adminAddressPromptScreen(code));
+    return;
+  }
+
+  if (data?.startsWith("currency_")) {
+    const code = data.slice("currency_".length);
+    if (!isCryptoCode(code)) return;
+    const amount = pendingTopUpAmounts.get(callback.from.id);
+    if (amount === undefined) {
+      await sendScreen(token, chatId, topUpScreen());
+      return;
+    }
+
+    try {
+      const quote = await createTopUpQuote(callback.from.id, amount, code);
+      await sendScreen(token, chatId, topUpAddressScreen(quote));
+    } catch (error) {
+      if (error instanceof CryptoQuoteError) {
+        if (error.reason === "address_not_configured") {
+          await sendScreen(token, chatId, addressNotConfiguredScreen(code));
+          return;
+        }
+        if (error.reason === "rate_unavailable") {
+          await sendScreen(token, chatId, exchangeRateUnavailableScreen());
+          return;
+        }
+        await sendScreen(token, chatId, topUpQuoteUnavailableScreen());
+        return;
+      }
+
+      logger.error("Could not create crypto top-up quote");
+      await sendScreen(token, chatId, topUpQuoteUnavailableScreen());
+    }
+    return;
+  }
+
   switch (callback.data) {
     case "menu":
       redeemingUserIds.delete(callback.from.id);
       enteringTopUpAmountUserIds.delete(callback.from.id);
-      await sendScreen(
+      pendingTopUpAmounts.delete(callback.from.id);
+      configuringCryptoAddress.delete(callback.from.id);
+      await showWelcome(
         token,
         chatId,
-        welcomeScreen(callback.from.first_name, callback.from.last_name),
+        callback.from.first_name,
+        callback.from.last_name,
       );
       return;
     case "buy_plan":
@@ -189,10 +336,11 @@ async function handleCallback(
       return;
     case "redeem_cancel":
       redeemingUserIds.delete(callback.from.id);
-      await sendScreen(
+      await showWelcome(
         token,
         chatId,
-        welcomeScreen(callback.from.first_name, callback.from.last_name),
+        callback.from.first_name,
+        callback.from.last_name,
       );
       return;
     case "wallet":
@@ -223,6 +371,8 @@ async function handleCallback(
       return;
     case "top_up":
       enteringTopUpAmountUserIds.delete(callback.from.id);
+      pendingTopUpAmounts.delete(callback.from.id);
+      configuringCryptoAddress.delete(callback.from.id);
       await sendScreen(token, chatId, topUpScreen());
       return;
     case "topup_80":
@@ -230,17 +380,67 @@ async function handleCallback(
     case "topup_200":
     case "topup_500": {
       const amount = Number(callback.data.slice("topup_".length));
-      await sendScreen(token, chatId, topUpUnavailableScreen(amount));
+      pendingTopUpAmounts.set(callback.from.id, amount);
+      enteringTopUpAmountUserIds.delete(callback.from.id);
+      redeemingUserIds.delete(callback.from.id);
+      configuringCryptoAddress.delete(callback.from.id);
+      await sendScreen(
+        token,
+        chatId,
+        cryptoCurrencySelectionScreen(amount),
+      );
       return;
     }
     case "topup_custom":
       redeemingUserIds.delete(callback.from.id);
+      pendingTopUpAmounts.delete(callback.from.id);
+      configuringCryptoAddress.delete(callback.from.id);
       enteringTopUpAmountUserIds.add(callback.from.id);
       await sendScreen(token, chatId, customTopUpAmountScreen());
       return;
     case "topup_cancel":
       enteringTopUpAmountUserIds.delete(callback.from.id);
+      pendingTopUpAmounts.delete(callback.from.id);
+      configuringCryptoAddress.delete(callback.from.id);
       await sendScreen(token, chatId, topUpScreen());
+      return;
+    case "topup_back":
+      enteringTopUpAmountUserIds.delete(callback.from.id);
+      pendingTopUpAmounts.delete(callback.from.id);
+      configuringCryptoAddress.delete(callback.from.id);
+      await sendScreen(token, chatId, topUpScreen());
+      return;
+    case "currency_back": {
+      const amount = pendingTopUpAmounts.get(callback.from.id);
+      if (amount === undefined) {
+        await sendScreen(token, chatId, topUpScreen());
+      } else {
+        await sendScreen(
+          token,
+          chatId,
+          cryptoCurrencySelectionScreen(amount),
+        );
+      }
+      return;
+    }
+    case "admin_cancel":
+      configuringCryptoAddress.delete(callback.from.id);
+      await showAdminPanel(token, chatId);
+      return;
+    case "admin_retry":
+      await showAdminPanel(token, chatId);
+      return;
+    case "admin_menu":
+      configuringCryptoAddress.delete(callback.from.id);
+      redeemingUserIds.delete(callback.from.id);
+      enteringTopUpAmountUserIds.delete(callback.from.id);
+      pendingTopUpAmounts.delete(callback.from.id);
+      await showWelcome(
+        token,
+        chatId,
+        callback.from.first_name,
+        callback.from.last_name,
+      );
       return;
     case "plan_1_day":
     case "plan_2_day":
@@ -265,16 +465,105 @@ async function handleMessage(
   if (/^\/start(?:@\w+)?(?:\s|$)/i.test(text)) {
     redeemingUserIds.delete(user.id);
     enteringTopUpAmountUserIds.delete(user.id);
+    pendingTopUpAmounts.delete(user.id);
+    configuringCryptoAddress.delete(user.id);
     try {
       await saveTelegramUser(user);
     } catch {
       logger.error("Could not save Telegram user profile");
     }
-    await sendScreen(
-      token,
-      message.chat.id,
-      welcomeScreen(user.first_name, user.last_name),
-    );
+    await showWelcome(token, message.chat.id, user.first_name, user.last_name);
+    return;
+  }
+
+  if (/^\/admin(?:@\w+)?(?:\s|$)/i.test(text)) {
+    redeemingUserIds.delete(user.id);
+    enteringTopUpAmountUserIds.delete(user.id);
+    pendingTopUpAmounts.delete(user.id);
+    configuringCryptoAddress.delete(user.id);
+
+    if (user.id !== ADMIN_TELEGRAM_ID) {
+      await sendScreen(token, message.chat.id, adminUnauthorizedScreen());
+      return;
+    }
+    if (message.chat.type !== "private") {
+      await sendScreen(token, message.chat.id, adminPrivateChatOnlyScreen());
+      return;
+    }
+
+    try {
+      await saveTelegramUser(user);
+    } catch {
+      logger.warn("Could not refresh the admin Telegram profile");
+    }
+    await showAdminPanel(token, message.chat.id);
+    return;
+  }
+
+  if (configuringCryptoAddress.has(user.id)) {
+    if (user.id !== ADMIN_TELEGRAM_ID) return;
+    if (message.chat.type !== "private") {
+      await sendScreen(token, message.chat.id, adminPrivateChatOnlyScreen());
+      return;
+    }
+
+    const target = configuringCryptoAddress.get(user.id);
+    if (!target) return;
+    if (/^\/cancel(?:@\w+)?(?:\s|$)/i.test(text)) {
+      configuringCryptoAddress.delete(user.id);
+      await showAdminPanel(token, message.chat.id);
+      return;
+    }
+
+    if (target === "website") {
+      try {
+        const websiteUrl = await saveWebsiteUrl(text, user.id);
+        configuringCryptoAddress.delete(user.id);
+        const configuredMethods = await getConfiguredPaymentMethods();
+        await sendScreen(
+          token,
+          message.chat.id,
+          adminWebsiteSavedScreen(
+            websiteUrl,
+            new Set(configuredMethods.map((method) => method.currencyCode)),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof Error && error.message === "invalid_website_url") {
+          await sendScreen(token, message.chat.id, adminWebsiteInvalidScreen());
+          return;
+        }
+        logger.error("Could not save admin website link");
+        await sendScreen(token, message.chat.id, adminStorageUnavailableScreen());
+      }
+      return;
+    }
+
+    const code = target;
+    try {
+      await saveCryptoPaymentAddress(code, text, user.id);
+      configuringCryptoAddress.delete(user.id);
+      const [configuredMethods, websiteUrl] = await Promise.all([
+        getConfiguredPaymentMethods(),
+        getWebsiteUrl(),
+      ]);
+      await sendScreen(
+        token,
+        message.chat.id,
+        adminAddressSavedScreen(
+          code,
+          new Set(configuredMethods.map((method) => method.currencyCode)),
+          Boolean(websiteUrl),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof Error && error.message === "invalid_crypto_address") {
+        await sendScreen(token, message.chat.id, adminAddressInvalidScreen(code));
+        return;
+      }
+      logger.error("Could not save crypto payment address");
+      await sendScreen(token, message.chat.id, adminStorageUnavailableScreen());
+    }
     return;
   }
 
@@ -287,12 +576,17 @@ async function handleMessage(
     }
 
     const amount = Number(normalized);
-    if (!Number.isFinite(amount) || amount < 1 || amount > 10_000) {
+    if (!Number.isFinite(amount) || amount < 50 || amount > 10_000) {
       await sendScreen(token, message.chat.id, invalidTopUpAmountScreen());
       return;
     }
 
-    await sendScreen(token, message.chat.id, topUpUnavailableScreen(amount));
+    pendingTopUpAmounts.set(user.id, amount);
+    await sendScreen(
+      token,
+      message.chat.id,
+      cryptoCurrencySelectionScreen(amount),
+    );
     return;
   }
 
@@ -356,7 +650,10 @@ export function startTelegramBot(): void {
   void (async () => {
     try {
       await callTelegram(token, "setMyCommands", {
-        commands: [{ command: "start", description: "Open the main menu" }],
+        commands: [
+          { command: "start", description: "Open the main menu" },
+          { command: "admin", description: "Open admin settings" },
+        ],
       });
       logger.info("Telegram bot command menu configured");
     } catch {

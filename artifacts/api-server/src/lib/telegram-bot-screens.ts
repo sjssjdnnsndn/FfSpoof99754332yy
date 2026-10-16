@@ -1,9 +1,8 @@
 import type { TelegramUser as TelegramUserProfile } from "@workspace/db";
 
-export interface InlineButton {
-  text: string;
-  callback_data: string;
-}
+export type InlineButton =
+  | { text: string; callback_data: string; url?: never }
+  | { text: string; url: string; callback_data?: never };
 
 export interface BotScreen {
   text: string;
@@ -67,7 +66,11 @@ function planDetails(
   ].join("\n");
 }
 
-export function welcomeScreen(firstName?: string, lastName?: string): BotScreen {
+export function welcomeScreen(
+  firstName?: string,
+  lastName?: string,
+  websiteUrl?: string,
+): BotScreen {
   const name = escapeHtml(fullName(firstName, lastName));
 
   return screen(
@@ -92,7 +95,11 @@ export function welcomeScreen(firstName?: string, lastName?: string): BotScreen 
         { text: "❓ FAQ", callback_data: "faq" },
       ],
       [{ text: "📲 Nine App", callback_data: "nine_app" }],
-      [{ text: "🌐 Website ↗", callback_data: "website" }],
+      [
+        websiteUrl
+          ? { text: "🌐 Website", url: websiteUrl }
+          : { text: "🌐 Website", callback_data: "website" },
+      ],
     ],
   );
 }
@@ -137,7 +144,7 @@ export function walletScreen(): BotScreen {
       divider,
       "",
       "💡 <b>How top-ups work</b>",
-      "Crypto top-ups such as Bitcoin and USDT will appear here after a payment provider is connected. Payments are not enabled yet.",
+      "Top-up quotes can show an admin-set crypto address. Payments are not monitored or credited automatically yet.",
     ].join("\n"),
     [
       [{ text: "💵 Top up", callback_data: "top_up" }],
@@ -171,7 +178,7 @@ export function invoicesScreen(): BotScreen {
       divider,
       "",
       "💡 <b>Invoices</b>",
-      "No invoices yet. A payment provider must be connected before this bot can create or accept payments.",
+      "No paid invoices yet. The bot can show top-up quotes, but does not detect deposits or credit your balance automatically.",
     ].join("\n"),
     [
       [{ text: "💵 Top up", callback_data: "top_up" }],
@@ -260,92 +267,6 @@ export function redeemUnavailableScreen(): BotScreen {
   );
 }
 
-export function topUpScreen(): BotScreen {
-  return screen(
-    [
-      "<b>💵 Top up</b>",
-      divider,
-      "💰 Balance ▹ $0.00",
-      "🕒 Last time ▹",
-      "💵 Amounts ▹ $1 to $10,000",
-      divider,
-      "",
-      "💡 <b>Pick an amount</b>",
-      "Tap one of the amounts, or Custom amount to type your own. A secure payment link will be available after payment setup is connected; your balance will be credited only after confirmation.",
-      "",
-      "⚠️ Payment setup is not connected yet; no invoice will be created.",
-    ].join("\n"),
-    [
-      [
-        { text: "💵 $80", callback_data: "topup_80" },
-        { text: "💵 $150", callback_data: "topup_150" },
-      ],
-      [
-        { text: "💵 $200", callback_data: "topup_200" },
-        { text: "💵 $500", callback_data: "topup_500" },
-      ],
-      [{ text: "✏️ Custom amount", callback_data: "topup_custom" }],
-      [
-        { text: "◀️ Wallet", callback_data: "wallet" },
-        ...menuRow,
-      ],
-    ],
-  );
-}
-
-export function customTopUpAmountScreen(): BotScreen {
-  return screen(
-    [
-      "<b>✏️ Custom amount</b>",
-      divider,
-      "Enter an amount from $1 to $10,000.",
-      "You can include up to two decimal places.",
-      "",
-      "⚠️ Payments are not enabled yet; no invoice will be created.",
-    ].join("\n"),
-    [
-      [{ text: "❌ Cancel", callback_data: "topup_cancel" }],
-      menuRow,
-    ],
-  );
-}
-
-export function invalidTopUpAmountScreen(): BotScreen {
-  return screen(
-    [
-      "<b>❌ Amount not valid</b>",
-      divider,
-      "Enter an amount from $1 to $10,000, with up to two decimal places.",
-    ].join("\n"),
-    [
-      [{ text: "✏️ Try again", callback_data: "topup_custom" }],
-      [
-        { text: "💰 Wallet", callback_data: "wallet" },
-        ...menuRow,
-      ],
-    ],
-  );
-}
-
-export function topUpUnavailableScreen(amount?: number): BotScreen {
-  const amountLine =
-    amount === undefined ? "" : ` for ${money(amount)}`;
-
-  return screen(
-    [
-      "<b>❌ Top-up isn't set up yet</b>",
-      divider,
-      `No invoice was created${amountLine} and no payment was taken.`,
-      "Connect a crypto payment provider before sending funds.",
-    ].join("\n"),
-    [
-      [{ text: "↩️ Pick another amount", callback_data: "top_up" }],
-      [{ text: "💰 Wallet", callback_data: "wallet" }],
-      menuRow,
-    ],
-  );
-}
-
 export function faqScreen(): BotScreen {
   return screen(
     ["<b>❓ FAQ</b>", divider, "Tap a question to see the answer:"].join("\n"),
@@ -405,7 +326,7 @@ const faqAnswers: Record<string, string> = {
   faq_payments: [
     "<b>💳 Supported payments</b>",
     divider,
-    "Bitcoin, USDT and other crypto are shown as intended payment methods. Payment processing is not connected yet. Do not send funds to this bot.",
+    "The bot can show an admin-set address and a current exchange-rate quote for BTC, ETH, USDT and other listed currencies. Deposits are not monitored or credited automatically. Do not send funds until payment verification is enabled.",
   ].join("\n"),
   faq_dtmf: [
     "<b>🎛️ What is DTMF monitoring?</b>",
@@ -459,5 +380,15 @@ export function insufficientBalanceFor(planId: string): BotScreen | undefined {
 }
 
 export function websiteNotConfiguredText(): string {
-  return "The website link hasn't been set up yet.";
+  return "The admin hasn't set the website link yet.";
+}
+
+export function websiteLinkScreen(websiteUrl: string): BotScreen {
+  return screen(
+    ["<b>🌐 Website</b>", divider, "Open the configured website:"].join("\n"),
+    [
+      [{ text: "🌐 Open Website", url: websiteUrl }],
+      menuRow,
+    ],
+  );
 }
