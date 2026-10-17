@@ -44,6 +44,7 @@ import {
   createTopUpQuote,
   CryptoQuoteError,
   getConfiguredPaymentMethods,
+  getLatestTopUpAmount,
   saveCryptoPaymentAddress,
 } from "./telegram-crypto";
 import { isCryptoCode, type CryptoCode } from "./telegram-crypto-currencies";
@@ -282,6 +283,28 @@ async function handleCallback(
     return;
   }
 
+  if (data === "currency_back") {
+    let amount = pendingTopUpAmounts.get(callback.from.id);
+    if (amount === undefined) {
+      try {
+        amount = await getLatestTopUpAmount(callback.from.id);
+      } catch {
+        logger.error("Could not restore the user's previous top-up amount");
+      }
+    }
+    if (amount === undefined) {
+      await sendScreen(token, chatId, topUpScreen());
+    } else {
+      pendingTopUpAmounts.set(callback.from.id, amount);
+      await sendScreen(
+        token,
+        chatId,
+        cryptoCurrencySelectionScreen(amount),
+      );
+    }
+    return;
+  }
+
   if (data?.startsWith("currency_")) {
     const code = data.slice("currency_".length);
     if (!isCryptoCode(code)) return;
@@ -411,19 +434,6 @@ async function handleCallback(
       configuringCryptoAddress.delete(callback.from.id);
       await sendScreen(token, chatId, topUpScreen());
       return;
-    case "currency_back": {
-      const amount = pendingTopUpAmounts.get(callback.from.id);
-      if (amount === undefined) {
-        await sendScreen(token, chatId, topUpScreen());
-      } else {
-        await sendScreen(
-          token,
-          chatId,
-          cryptoCurrencySelectionScreen(amount),
-        );
-      }
-      return;
-    }
     case "admin_cancel":
       configuringCryptoAddress.delete(callback.from.id);
       await showAdminPanel(token, chatId);

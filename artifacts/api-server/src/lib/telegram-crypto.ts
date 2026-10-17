@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import {
   cryptoPaymentMethods,
   db,
@@ -103,6 +103,21 @@ export async function getConfiguredPaymentMethods(): Promise<
   CryptoPaymentMethod[]
 > {
   return db.select().from(cryptoPaymentMethods);
+}
+
+export async function getLatestTopUpAmount(
+  telegramId: number,
+): Promise<number | undefined> {
+  const [quote] = await db
+    .select({ amountUsd: topUpQuotes.amountUsd })
+    .from(topUpQuotes)
+    .where(eq(topUpQuotes.telegramId, telegramId))
+    .orderBy(desc(topUpQuotes.createdAt), desc(topUpQuotes.id))
+    .limit(1);
+
+  if (!quote) return undefined;
+  const amount = Number(quote.amountUsd);
+  return Number.isFinite(amount) ? amount : undefined;
 }
 
 export async function saveCryptoPaymentAddress(
