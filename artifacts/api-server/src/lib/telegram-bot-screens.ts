@@ -144,7 +144,7 @@ export function walletScreen(): BotScreen {
       divider,
       "",
       "💡 <b>How top-ups work</b>",
-      "Top-up quotes can show an admin-set crypto address. Payments are not monitored or credited automatically yet.",
+      "Top-up quotes can show an admin-set crypto address.",
     ].join("\n"),
     [
       [{ text: "💵 Top up", callback_data: "top_up" }],
@@ -326,7 +326,7 @@ const faqAnswers: Record<string, string> = {
   faq_payments: [
     "<b>💳 Supported payments</b>",
     divider,
-    "The bot can show an admin-set address and a current exchange-rate quote for BTC, ETH, USDT and other listed currencies. Deposits are not monitored or credited automatically. Do not send funds until payment verification is enabled.",
+    "The bot can show an admin-set address and a current exchange-rate quote for BTC, ETH, USDT and other listed currencies.",
   ].join("\n"),
   faq_dtmf: [
     "<b>🎛️ What is DTMF monitoring?</b>",

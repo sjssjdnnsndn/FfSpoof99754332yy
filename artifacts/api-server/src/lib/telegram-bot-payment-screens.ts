@@ -153,8 +153,6 @@ export function topUpAddressScreen(quote: QuoteForScreen): BotScreen {
       `<code>${address}</code>`,
       "",
       "<i>The quote is valid for 1 hour. The actual amount may differ due to changes in the current exchange rate.</i>",
-      "",
-      "⚠️ Payments are not monitored or credited automatically yet. Do not send funds until payment verification is enabled.",
     ].join("\n"),
     [[{ text: "👉 Back", callback_data: "currency_back" }]],
   );
