@@ -352,6 +352,17 @@ export function faqAnswerScreen(question: string): BotScreen {
   ]);
 }
 
+export function callerIdUnavailableScreen(): BotScreen {
+  return screen(
+    [
+      "<b>📞 Caller ID</b>",
+      divider,
+      "Caller ID changes aren't connected yet. No caller ID was changed.",
+    ].join("\n"),
+    [menuRow],
+  );
+}
+
 export function insufficientBalanceFor(planId: string): BotScreen | undefined {
   const plan = plans.find((candidate) => candidate.id === planId);
   if (!plan) return undefined;

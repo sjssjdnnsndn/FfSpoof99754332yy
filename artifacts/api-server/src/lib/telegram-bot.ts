@@ -2,6 +2,7 @@ import { logger } from "./logger";
 import { db, telegramUsers } from "@workspace/db";
 import {
   accountScreen,
+  callerIdUnavailableScreen,
   faqAnswerScreen,
   faqScreen,
   insufficientBalanceFor,
@@ -500,6 +501,45 @@ async function handleMessage(
     return;
   }
 
+  const command = text
+    .match(/^\/([a-z0-9_]+)(?:@\w+)?(?:\s|$)/i)?.[1]
+    ?.toLowerCase();
+
+  if (command === "cancel") {
+    const wasAdminSetup =
+      user.id === ADMIN_TELEGRAM_ID &&
+      message.chat.type === "private" &&
+      configuringCryptoAddress.has(user.id);
+    redeemingUserIds.delete(user.id);
+    enteringTopUpAmountUserIds.delete(user.id);
+    pendingTopUpAmounts.delete(user.id);
+    configuringCryptoAddress.delete(user.id);
+    if (wasAdminSetup) {
+      await showAdminPanel(token, message.chat.id);
+    } else {
+      await showWelcome(token, message.chat.id, user.first_name, user.last_name);
+    }
+    return;
+  }
+
+  if (command === "balance" || command === "sip" || command === "help" || command === "setcaller") {
+    redeemingUserIds.delete(user.id);
+    enteringTopUpAmountUserIds.delete(user.id);
+    pendingTopUpAmounts.delete(user.id);
+    configuringCryptoAddress.delete(user.id);
+
+    if (command === "balance") {
+      await sendScreen(token, message.chat.id, walletScreen());
+    } else if (command === "sip") {
+      await sendScreen(token, message.chat.id, nineAppScreen());
+    } else if (command === "help") {
+      await sendScreen(token, message.chat.id, faqScreen());
+    } else {
+      await sendScreen(token, message.chat.id, callerIdUnavailableScreen());
+    }
+    return;
+  }
+
   if (configuringCryptoAddress.has(user.id)) {
     if (user.id !== ADMIN_TELEGRAM_ID) return;
     if (message.chat.type !== "private") {
@@ -649,9 +689,24 @@ export function startTelegramBot(): void {
 
   void (async () => {
     try {
+      const userCommands = [
+        { command: "start", description: "Main menu" },
+        { command: "balance", description: "Wallet balance" },
+        { command: "sip", description: "Your SIP account" },
+        {
+          command: "setcaller",
+          description: "Set your caller ID, e.g. /setcaller 12125551234",
+        },
+        { command: "help", description: "How it works" },
+        { command: "cancel", description: "Stop what you were typing" },
+      ];
       await callTelegram(token, "setMyCommands", {
+        commands: userCommands,
+      });
+      await callTelegram(token, "setMyCommands", {
+        scope: { type: "chat", chat_id: ADMIN_TELEGRAM_ID },
         commands: [
-          { command: "start", description: "Open the main menu" },
+          ...userCommands,
           { command: "admin", description: "Open admin settings" },
         ],
       });
