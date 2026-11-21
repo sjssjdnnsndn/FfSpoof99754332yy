@@ -37,13 +37,27 @@ router.get("/ping", async (_req, res) => {
   });
 });
 
-// UptimeRobot expects 200 OK - this is simplest
+// Lightweight - for Render health check + cron-job.org (no Telegram call)
 router.get("/keepalive", async (_req, res) => {
   res.json({ status: "ok", alive: true, timestamp: new Date().toISOString(), uptime: process.uptime() });
 });
 
 router.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "ninespoof-api", alive: true });
+  res.json({ status: "ok", service: "ninespoof-api", alive: true, uptime: process.uptime() });
+});
+
+// cron-job.org recommended - ultra-light, always 200, supports GET & HEAD
+router.get("/cron", (_req, res) => {
+  res.status(200).send("OK");
+});
+router.head("/cron", (_req, res) => {
+  res.status(200).end();
+});
+router.head("/ping", (_req, res) => {
+  res.status(200).end();
+});
+router.head("/health", (_req, res) => {
+  res.status(200).end();
 });
 
 export default router;

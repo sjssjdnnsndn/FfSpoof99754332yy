@@ -3,21 +3,37 @@ services:
     name: ninespoof-bot
     env: docker
     plan: free
+    region: singapore  # closest to India (Mumbai) - change to oregon if needed
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /api/ping
+    healthCheckPath: /api/health  # lightweight, no Telegram call - for Render
     autoDeploy: false
     envVars:
-      - key: NODE_ENV
-        value: production
-      - key: PORT
-        value: 5000
+      # --- REQUIRED: set these in Render Dashboard > Environment ---
       - key: MONGODB_URI
         sync: false
       - key: DATABASE_URL
         sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+
+      # --- OPTIONAL / DEFAULTS ---
       - key: ADMIN_TELEGRAM_ID
         value: 6498333937
+      - key: ADMIN_ID
+        value: 6498333937
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000  # Render sets this automatically, 10000 is default
       - key: LOG_LEVEL
         value: info
+
+      # Auto self-ping every 30s (detects RENDER_EXTERNAL_URL automatically)
+      - key: SELF_PING_INTERVAL_MS
+        value: 30000
+      - key: SELF_PING_PATH
+        value: /api/ping
+
+      # Optional override: if you use custom domain, set PUBLIC_URL=https://yourdomain.com
+      - key: PUBLIC_URL
+        sync: false
