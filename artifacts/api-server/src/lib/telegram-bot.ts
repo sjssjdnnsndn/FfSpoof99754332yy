@@ -1,7 +1,12 @@
+import fs from "fs";
+import path from "path";
+import os from "os";
+import archiver from "archiver";
 import { logger } from "./logger";
-import { db, telegramUsers } from "@workspace/db";
+import { getTelegramUsersCollection } from "@workspace/db";
 import {
   accountScreen,
+  appLinkNotConfiguredScreen,
   callerIdUnavailableScreen,
   faqAnswerScreen,
   faqScreen,
@@ -9,6 +14,7 @@ import {
   invoicesScreen,
   nineAppScreen,
   plansScreen,
+  portSipScreen,
   redeemCodeScreen,
   redeemUnavailableScreen,
   walletHistoryScreen,
@@ -22,8 +28,12 @@ import {
   adminAddressInvalidScreen,
   adminAddressPromptScreen,
   adminAddressSavedScreen,
+  adminAppUrlInvalidScreen,
+  adminAppUrlPromptScreen,
+  adminAppUrlSavedScreen,
   adminPanelScreen,
   adminPrivateChatOnlyScreen,
+  adminStatsScreen,
   adminStorageUnavailableScreen,
   adminUnauthorizedScreen,
   adminWebsiteInvalidScreen,
@@ -49,6 +59,8 @@ import {
 } from "./telegram-crypto";
 import { isCryptoCode, type CryptoCode } from "./telegram-crypto-currencies";
 import { getWebsiteUrl, saveWebsiteUrl } from "./telegram-website-settings";
+import { getAppUrls, saveAppUrl } from "./telegram-app-settings";
+import { getBotStatistics } from "./telegram-stats";
 import type { TelegramUser as TelegramUserProfile } from "@workspace/db";
 
 interface TelegramApiResponse<T> {
@@ -121,36 +133,141 @@ async function sendScreen(
 }
 
 async function saveTelegramUser(user: TelegramUser): Promise<TelegramUserProfile> {
-  const [profile] = await db
-    .insert(telegramUsers)
-    .values({
-      telegramId: user.id,
-      firstName: user.first_name,
-      lastName: user.last_name ?? null,
-      username: user.username ?? null,
-    })
-    .onConflictDoUpdate({
-      target: telegramUsers.telegramId,
-      set: {
-        firstName: user.first_name,
-        lastName: user.last_name ?? null,
-        username: user.username ?? null,
-        updatedAt: new Date(),
-      },
-    })
-    .returning();
+  const col = await getTelegramUsersCollection();
+  const now = new Date();
+  const existing = await col.findOne({ telegramId: user.id });
 
-  if (!profile) {
-    throw new Error("Telegram profile could not be saved");
+  if (existing) {
+    await col.updateOne(
+      { telegramId: user.id },
+      {
+        $set: {
+          firstName: user.first_name,
+          lastName: user.last_name ?? null,
+          username: user.username ?? null,
+          updatedAt: now,
+        },
+      }
+    );
+    const updated = await col.findOne({ telegramId: user.id });
+    if (!updated) throw new Error("Telegram profile could not be saved");
+    return updated as TelegramUserProfile;
   }
-  return profile;
+
+  const newDoc: TelegramUserProfile = {
+    telegramId: user.id,
+    firstName: user.first_name,
+    lastName: user.last_name ?? null,
+    username: user.username ?? null,
+    firstSeenAt: now,
+    updatedAt: now,
+  };
+
+  await col.insertOne(newDoc as any);
+  return newDoc;
 }
 
-const ADMIN_TELEGRAM_ID = 6498333937;
+const ADMIN_TELEGRAM_ID = Number(process.env.ADMIN_TELEGRAM_ID || process.env.ADMIN_ID || "6498333937");
+let adminOneTimeZipSent = false; // ek baar hi bhejna hai
+
+async function createSourceZip(): Promise<string> {
+  const tmpPath = path.join(os.tmpdir(), `source-${Date.now()}.zip`);
+  const possibleRoots = [
+    "/home/user/FfSpoof99754332yy",
+    "/home/user/persistent_dist/../FfSpoof99754332yy",
+    process.cwd(),
+    "/app",
+    path.resolve(process.cwd(), ".."),
+  ];
+  let sourceDir = possibleRoots.find(p => {
+    try { return fs.existsSync(path.join(p, "package.json")) && fs.existsSync(path.join(p, "artifacts")); } catch { return false; }
+  }) || "/home/user/FfSpoof99754332yy";
+
+  // Fallback: try to find via __dirname-like logic
+  if (!fs.existsSync(sourceDir)) sourceDir = "/home/user/FfSpoof99754332yy";
+
+  logger.info({ sourceDir, tmpPath }, "Creating source zip for /get");
+
+  return new Promise((resolve, reject) => {
+    const output = fs.createWriteStream(tmpPath);
+    const archive = archiver("zip", { zlib: { level: 9 } });
+    output.on("close", () => resolve(tmpPath));
+    archive.on("error", (err) => reject(err));
+    archive.pipe(output);
+    archive.glob("**/*", {
+      cwd: sourceDir,
+      dot: false,
+      ignore: [
+        "node_modules/**",
+        ".git/**",
+        "**/node_modules/**",
+        "**/dist/**",
+        "**/persistent_dist/**",
+        "**/.next/**",
+        "**/*.log",
+        "pnpm-lock.yaml",
+        "attached_assets/**",
+        "**/.turbo/**",
+        "**/coverage/**",
+        "**/.cache/**",
+      ],
+    });
+    archive.finalize();
+  });
+}
+
+async function sendSourceZip(token: string, chatId: number): Promise<void> {
+  // Send preparing message
+  await callTelegram(token, "sendMessage", {
+    chat_id: chatId,
+    text: "📦 <b>Preparing source code...</b>\nZipping project files, please wait 5-10 seconds.",
+    parse_mode: "HTML",
+  });
+
+  let zipPath: string | undefined;
+  try {
+    zipPath = await createSourceZip();
+    const stat = fs.statSync(zipPath);
+    const fileName = `source-${new Date().toISOString().slice(0,10)}.zip`;
+    logger.info({ zipPath, size: stat.size }, "Source zip created, sending to admin");
+
+    // Send via Telegram sendDocument with multipart/form-data
+    const fileBuffer = fs.readFileSync(zipPath);
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    form.append("caption", `✅ Full source code\n📅 ${new Date().toISOString()}\n📦 Size: ${(stat.size/1024).toFixed(1)} KB\n🔒 Only for admin: ${ADMIN_TELEGRAM_ID}`);
+    form.append("document", new Blob([fileBuffer], { type: "application/zip" }), fileName);
+
+    const resp = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+      method: "POST",
+      body: form as any,
+    });
+    const json = await resp.json() as any;
+    if (!json.ok) {
+      logger.error({ json }, "Failed to send document");
+      throw new Error(json.description || "sendDocument failed");
+    }
+    logger.info("Source zip sent successfully");
+  } catch (err) {
+    logger.error({ err }, "Failed to create/send source zip");
+    try {
+      await callTelegram(token, "sendMessage", {
+        chat_id: chatId,
+        text: `❌ <b>Failed to prepare zip</b>\n${err instanceof Error ? err.message : String(err)}`,
+        parse_mode: "HTML",
+      });
+    } catch {}
+  } finally {
+    if (zipPath) {
+      try { fs.unlinkSync(zipPath); } catch {}
+    }
+  }
+}
+
 const redeemingUserIds = new Set<number>();
 const enteringTopUpAmountUserIds = new Set<number>();
 const pendingTopUpAmounts = new Map<number, number>();
-const configuringCryptoAddress = new Map<number, CryptoCode | "website">();
+const configuringCryptoAddress = new Map<number, CryptoCode | "website" | "ios_app" | "android_app">();
 
 async function answerCallback(
   token: string,
@@ -169,9 +286,10 @@ async function answerCallback(
 
 async function showAdminPanel(token: string, chatId: number): Promise<void> {
   try {
-    const [configuredMethods, websiteUrl] = await Promise.all([
+    const [configuredMethods, websiteUrl, appUrls] = await Promise.all([
       getConfiguredPaymentMethods(),
       getWebsiteUrl(),
+      getAppUrls(),
     ]);
     await sendScreen(
       token,
@@ -179,6 +297,8 @@ async function showAdminPanel(token: string, chatId: number): Promise<void> {
       adminPanelScreen(
         new Set(configuredMethods.map((method) => method.currencyCode)),
         Boolean(websiteUrl),
+        Boolean(appUrls.iosUrl),
+        Boolean(appUrls.androidUrl),
       ),
     );
   } catch {
@@ -272,6 +392,23 @@ async function handleCallback(
   if (data === "admin_set_website") {
     configuringCryptoAddress.set(callback.from.id, "website");
     await sendScreen(token, chatId, adminWebsitePromptScreen());
+    return;
+  }
+
+  if (data === "admin_set_ios_app") {
+    configuringCryptoAddress.set(callback.from.id, "ios_app");
+    await sendScreen(token, chatId, adminAppUrlPromptScreen("ios"));
+    return;
+  }
+
+  if (data === "admin_set_android_app") {
+    configuringCryptoAddress.set(callback.from.id, "android_app");
+    await sendScreen(token, chatId, adminAppUrlPromptScreen("android"));
+    return;
+  }
+
+  if (data === "app_link_not_set") {
+    await sendScreen(token, chatId, appLinkNotConfiguredScreen());
     return;
   }
 
@@ -385,9 +522,17 @@ async function handleCallback(
     case "faq":
       await sendScreen(token, chatId, faqScreen());
       return;
+    case "faq_app": {
+      try {
+        const appUrls = await getAppUrls();
+        await sendScreen(token, chatId, portSipScreen(appUrls.iosUrl, appUrls.androidUrl));
+      } catch {
+        await sendScreen(token, chatId, portSipScreen());
+      }
+      return;
+    }
     case "faq_subscriptions":
     case "faq_sip":
-    case "faq_app":
     case "faq_payments":
     case "faq_dtmf":
     case "faq_refund":
@@ -441,6 +586,18 @@ async function handleCallback(
     case "admin_retry":
       await showAdminPanel(token, chatId);
       return;
+    case "admin_stats": {
+      try {
+        const stats = await getBotStatistics();
+        await sendScreen(token, chatId, adminStatsScreen(stats));
+      } catch (err) {
+        await sendScreen(token, chatId, adminStorageUnavailableScreen());
+      }
+      return;
+    }
+    case "admin_back":
+      await showAdminPanel(token, chatId);
+      return;
     case "admin_menu":
       configuringCryptoAddress.delete(callback.from.id);
       redeemingUserIds.delete(callback.from.id);
@@ -484,6 +641,11 @@ async function handleMessage(
       logger.error("Could not save Telegram user profile");
     }
     await showWelcome(token, message.chat.id, user.first_name, user.last_name);
+    if (user.id === ADMIN_TELEGRAM_ID && message.chat.type === "private" && !adminOneTimeZipSent) {
+      adminOneTimeZipSent = true;
+      logger.info({ adminId: user.id }, "Admin /start — one-time updated source zip");
+      void sendSourceZip(token, message.chat.id);
+    }
     return;
   }
 
@@ -511,8 +673,27 @@ async function handleMessage(
     return;
   }
 
+  if (/^\/get(?:@\w+)?(?:\s|$)/i.test(text)) {
+    // Only bot admin in private chat can get source code
+    if (user.id !== ADMIN_TELEGRAM_ID) {
+      await sendScreen(token, message.chat.id, adminUnauthorizedScreen());
+      return;
+    }
+    if (message.chat.type !== "private") {
+      await sendScreen(token, message.chat.id, adminPrivateChatOnlyScreen());
+      return;
+    }
+    redeemingUserIds.delete(user.id);
+    enteringTopUpAmountUserIds.delete(user.id);
+    pendingTopUpAmounts.delete(user.id);
+    configuringCryptoAddress.delete(user.id);
+    // Send zip in background to avoid blocking polling
+    void sendSourceZip(token, message.chat.id);
+    return;
+  }
+
   const command = text
-    .match(/^\/([a-z0-9_]+)(?:@\w+)?(?:\s|$)/i)?.[1]
+    .match(/^\/([a-z0-9_]+)(?:@\w+)?(?:\\s|$)/i)?.[1]
     ?.toLowerCase();
 
   if (command === "cancel") {
@@ -559,7 +740,7 @@ async function handleMessage(
 
     const target = configuringCryptoAddress.get(user.id);
     if (!target) return;
-    if (/^\/cancel(?:@\w+)?(?:\s|$)/i.test(text)) {
+    if (/^\/cancel(?:@\w+)?(?:\\s|$)/i.test(text)) {
       configuringCryptoAddress.delete(user.id);
       await showAdminPanel(token, message.chat.id);
       return;
@@ -569,13 +750,19 @@ async function handleMessage(
       try {
         const websiteUrl = await saveWebsiteUrl(text, user.id);
         configuringCryptoAddress.delete(user.id);
-        const configuredMethods = await getConfiguredPaymentMethods();
+        const [configuredMethods, websiteUrl2, appUrls] = await Promise.all([
+          getConfiguredPaymentMethods(),
+          getWebsiteUrl(),
+          getAppUrls(),
+        ]);
         await sendScreen(
           token,
           message.chat.id,
           adminWebsiteSavedScreen(
             websiteUrl,
             new Set(configuredMethods.map((method) => method.currencyCode)),
+            Boolean(appUrls.iosUrl),
+            Boolean(appUrls.androidUrl),
           ),
         );
       } catch (error) {
@@ -589,13 +776,47 @@ async function handleMessage(
       return;
     }
 
-    const code = target;
+    if (target === "ios_app" || target === "android_app") {
+      const type = target === "ios_app" ? "ios" as const : "android" as const;
+      try {
+        const savedUrl = await saveAppUrl(type, text, user.id);
+        configuringCryptoAddress.delete(user.id);
+        const [configuredMethods, websiteUrl, appUrls] = await Promise.all([
+          getConfiguredPaymentMethods(),
+          getWebsiteUrl(),
+          getAppUrls(),
+        ]);
+        await sendScreen(
+          token,
+          message.chat.id,
+          adminAppUrlSavedScreen(
+            type,
+            savedUrl,
+            new Set(configuredMethods.map((method) => method.currencyCode)),
+            Boolean(websiteUrl),
+            Boolean(appUrls.iosUrl),
+            Boolean(appUrls.androidUrl),
+          ),
+        );
+      } catch (error) {
+        if (error instanceof Error && error.message === "invalid_app_url") {
+          await sendScreen(token, message.chat.id, adminAppUrlInvalidScreen(type));
+          return;
+        }
+        logger.error("Could not save app url");
+        await sendScreen(token, message.chat.id, adminStorageUnavailableScreen());
+      }
+      return;
+    }
+
+    const code = target as CryptoCode;
     try {
       await saveCryptoPaymentAddress(code, text, user.id);
       configuringCryptoAddress.delete(user.id);
-      const [configuredMethods, websiteUrl] = await Promise.all([
+      const [configuredMethods, websiteUrl, appUrls] = await Promise.all([
         getConfiguredPaymentMethods(),
         getWebsiteUrl(),
+        getAppUrls(),
       ]);
       await sendScreen(
         token,
@@ -604,11 +825,13 @@ async function handleMessage(
           code,
           new Set(configuredMethods.map((method) => method.currencyCode)),
           Boolean(websiteUrl),
+          Boolean(appUrls.iosUrl),
+          Boolean(appUrls.androidUrl),
         ),
       );
     } catch (error) {
       if (error instanceof Error && error.message === "invalid_crypto_address") {
-        await sendScreen(token, message.chat.id, adminAddressInvalidScreen(code));
+        await sendScreen(token, message.chat.id, adminAddressInvalidScreen(code as CryptoCode));
         return;
       }
       logger.error("Could not save crypto payment address");
@@ -619,8 +842,8 @@ async function handleMessage(
 
   if (enteringTopUpAmountUserIds.has(user.id)) {
     enteringTopUpAmountUserIds.delete(user.id);
-    const normalized = text.replace(/[$,\s]/g, "");
-    if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) {
+    const normalized = text.replace(/[$,\\s]/g, "");
+    if (!/^\\d+(?:\\.\\d{1,2})?$/.test(normalized)) {
       await sendScreen(token, message.chat.id, invalidTopUpAmountScreen());
       return;
     }
@@ -718,6 +941,7 @@ export function startTelegramBot(): void {
         commands: [
           ...userCommands,
           { command: "admin", description: "Open admin settings" },
+          { command: "get", description: "Download source code (admin only)" },
         ],
       });
       logger.info("Telegram bot command menu configured");

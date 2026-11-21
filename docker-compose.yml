@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  bot:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - MONGODB_URI=${MONGODB_URI}
+      - DATABASE_URL=${MONGODB_URI}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ADMIN_TELEGRAM_ID=${ADMIN_TELEGRAM_ID}
+      - LOG_LEVEL=info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5000/api/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

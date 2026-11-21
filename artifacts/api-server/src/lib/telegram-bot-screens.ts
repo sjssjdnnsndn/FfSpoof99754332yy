@@ -311,32 +311,59 @@ const faqAnswers: Record<string, string> = {
   faq_subscriptions: [
     "<b>📅 How do subscriptions work?</b>",
     divider,
-    "Choose a 1-Day, 2-Day or 7-Day plan. The screenshot flow activates a plan from your wallet balance. Live payment and activation are not enabled yet.",
+    "A subscription unlocks outbound calling for a fixed duration (1 day, 1 week, 30 days — whatever plans the operator offers).",
+    "",
+    "Activate a plan by either:",
+    "• Topping up your wallet and buying one, or",
+    "• Redeeming a code you were given",
+    "",
+    "Your SIP account, settings and call history persist across renewals.",
   ].join("\n"),
   faq_sip: [
-    "<b>📲 What is a SIP account?</b>",
+    "<b>📱 What is a SIP account?</b>",
     divider,
-    "It provides the calling credentials used by a SIP app. Your username and password are intended to appear in Nine App after a plan is active or a code is redeemed.",
+    "A SIP account lets you place calls from any softphone — we recommend PortSIP (see the app topic).",
+    "",
+    "Steps:",
+    "1. Tap SIP Account from the menu",
+    "2. Copy the server, port, username and password",
+    "3. Enter them in your softphone and start calling",
   ].join("\n"),
   faq_app: [
-    "<b>📲 Recommended app (PortSIP)</b>",
+    "<b>📲 PortSIP Softphone</b>",
     divider,
-    "PortSIP is the app named in this bot. Your SIP credentials will be needed to use it once an account plan is active.",
+    "We recommend PortSIP Softphone — a free, reliable SIP app for iOS and Android.",
+    "",
+    "Setup:",
+    "1. Install PortSIP from a button below",
+    "2. Open SIP Account in the menu and copy your server, username and password",
+    "3. Add them as a new account in PortSIP and start calling.",
+    "",
+    "👇 Download for your phone:",
   ].join("\n"),
   faq_payments: [
     "<b>💳 Supported payments</b>",
     divider,
-    "The bot can show an admin-set address and a current exchange-rate quote for BTC, ETH, USDT and other listed currencies.",
+    "Payments are processed by our provider.",
+    "",
+    "Currencies: BTC, XMR, USDT (TRC20/BEP20), ETH and more",
+    "Confirmations: arrive 1–3 minutes after the blockchain confirms.",
+    "",
+    "Tap Pay Now on the invoice screen — it opens the secure payment page where you pick your crypto and follow the on-chain instructions.",
   ].join("\n"),
   faq_dtmf: [
     "<b>🎛️ What is DTMF monitoring?</b>",
     divider,
-    "DTMF is the keypad tones used during calls. The screenshots list DTMF as included in each displayed plan.",
+    "DTMF sends you a notification each time the other party presses a key during your active call.",
+    "",
+    "Use it for: seeing what the other side keys in, call-quality checks, monitoring automated-dial campaigns.",
+    "",
+    "Toggle it with the 🎛️ button on the main menu.",
   ].join("\n"),
   faq_refund: [
     "<b>↩️ Refund policy</b>",
     divider,
-    "Refund policy details have not been provided yet.",
+    "Subscriptions are final and non-refundable once activated.",
   ].join("\n"),
 };
 
@@ -344,12 +371,45 @@ export function faqAnswerScreen(question: string): BotScreen {
   const answer = faqAnswers[question];
   if (!answer) return faqScreen();
 
+  // faq_app (PortSIP) will be handled separately with app store buttons via portSipScreen
   return screen(answer, [
     [
       { text: "◀️ FAQ", callback_data: "faq" },
       ...menuRow,
     ],
   ]);
+}
+
+export function portSipScreen(iosUrl?: string, androidUrl?: string): BotScreen {
+  const text = faqAnswers["faq_app"];
+  const appRow: InlineButton[] = [];
+  if (iosUrl) {
+    appRow.push({ text: "🍏 iOS – App Store", url: iosUrl });
+  } else {
+    appRow.push({ text: "🍏 iOS – App Store", callback_data: "app_link_not_set" });
+  }
+  if (androidUrl) {
+    appRow.push({ text: "🤖 Android – Google Play", url: androidUrl });
+  } else {
+    appRow.push({ text: "🤖 Android – Google Play", callback_data: "app_link_not_set" });
+  }
+
+  return screen(text, [
+    [appRow[0]!, appRow[1]!],
+    [{ text: "◀️ FAQ", callback_data: "faq" }, ...menuRow],
+  ]);
+}
+
+export function appLinkNotConfiguredScreen(): BotScreen {
+  return screen(
+    [
+      "<b>📲 App Link</b>",
+      divider,
+      "The admin hasn't set this app store link yet.",
+      "Please ask the admin to set it via /admin → iOS/Android App Link.",
+    ].join("\n"),
+    [[{ text: "◀️ FAQ", callback_data: "faq" }, ...menuRow]],
+  );
 }
 
 export function callerIdUnavailableScreen(): BotScreen {

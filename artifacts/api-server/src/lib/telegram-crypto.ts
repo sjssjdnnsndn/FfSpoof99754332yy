@@ -1,8 +1,6 @@
-import { desc, eq } from "drizzle-orm";
 import {
-  cryptoPaymentMethods,
-  db,
-  topUpQuotes,
+  getCryptoPaymentMethodsCollection,
+  getTopUpQuotesCollection,
 } from "@workspace/db";
 import type { CryptoPaymentMethod } from "@workspace/db";
 import {
@@ -102,21 +100,17 @@ async function fetchCoinRates(): Promise<CachedRates> {
 export async function getConfiguredPaymentMethods(): Promise<
   CryptoPaymentMethod[]
 > {
-  return db.select().from(cryptoPaymentMethods);
+  const col = await getCryptoPaymentMethodsCollection();
+  return col.find({}).toArray() as Promise<CryptoPaymentMethod[]>;
 }
 
 export async function getLatestTopUpAmount(
   telegramId: number,
 ): Promise<number | undefined> {
-  const [quote] = await db
-    .select({ amountUsd: topUpQuotes.amountUsd })
-    .from(topUpQuotes)
-    .where(eq(topUpQuotes.telegramId, telegramId))
-    .orderBy(desc(topUpQuotes.createdAt), desc(topUpQuotes.id))
-    .limit(1);
-
-  if (!quote) return undefined;
-  const amount = Number(quote.amountUsd);
+  const col = await getTopUpQuotesCollection();
+  const quote = await col.find({ telegramId }).sort({ createdAt: -1 }).limit(1).toArray();
+  if (!quote.length || !quote[0]) return undefined;
+  const amount = Number(quote[0].amountUsd);
   return Number.isFinite(amount) ? amount : undefined;
 }
 
@@ -131,23 +125,20 @@ export async function saveCryptoPaymentAddress(
     throw new Error("invalid_crypto_address");
   }
 
-  await db
-    .insert(cryptoPaymentMethods)
-    .values({
-      currencyCode: code,
-      network: currency.network,
-      address: normalizedAddress,
-      updatedBy: adminTelegramId,
-    })
-    .onConflictDoUpdate({
-      target: cryptoPaymentMethods.currencyCode,
-      set: {
+  const col = await getCryptoPaymentMethodsCollection();
+  await col.updateOne(
+    { currencyCode: code },
+    {
+      $set: {
+        currencyCode: code,
         network: currency.network,
         address: normalizedAddress,
         updatedBy: adminTelegramId,
         updatedAt: new Date(),
       },
-    });
+    },
+    { upsert: true }
+  );
 }
 
 export async function createTopUpQuote(
@@ -170,11 +161,8 @@ export async function createTopUpQuote(
   const currency = findCryptoCurrency(code);
   if (!currency) throw new CryptoQuoteError("rate_unavailable");
 
-  const [method] = await db
-    .select()
-    .from(cryptoPaymentMethods)
-    .where(eq(cryptoPaymentMethods.currencyCode, code))
-    .limit(1);
+  const colMethods = await getCryptoPaymentMethodsCollection();
+  const method = await colMethods.findOne({ currencyCode: code });
   if (!method) throw new CryptoQuoteError("address_not_configured");
 
   const rates = await fetchCoinRates();
@@ -183,22 +171,22 @@ export async function createTopUpQuote(
 
   const amountCrypto = (amountUsd / rate.usd).toFixed(currency.decimals);
   const expiresAt = new Date(Date.now() + 60 * 60_000);
-  const [quote] = await db
-    .insert(topUpQuotes)
-    .values({
-      telegramId,
-      currencyCode: code,
-      network: currency.network,
-      amountUsd: amountUsd.toFixed(2),
-      exchangeRateUsd: rate.usd.toFixed(10),
-      cryptoAmount: amountCrypto,
-      depositAddress: method.address,
-      status: "quoted",
-      expiresAt,
-    })
-    .returning();
 
-  if (!quote) throw new CryptoQuoteError("quote_not_saved");
+  const colQuotes = await getTopUpQuotesCollection();
+  const insertResult = await colQuotes.insertOne({
+    telegramId,
+    currencyCode: code,
+    network: currency.network,
+    amountUsd: amountUsd.toFixed(2),
+    exchangeRateUsd: rate.usd.toFixed(10),
+    cryptoAmount: amountCrypto,
+    depositAddress: method.address,
+    status: "quoted",
+    createdAt: new Date(),
+    expiresAt,
+  });
+
+  if (!insertResult.insertedId) throw new CryptoQuoteError("quote_not_saved");
 
   return {
     currency: currency.paymentMethod,

@@ -1,61 +1,47 @@
-import { createInsertSchema } from "drizzle-zod";
-import { z } from "zod/v4";
-import {
-  bigint,
-  numeric,
-  pgTable,
-  serial,
-  text,
-  timestamp,
-} from "drizzle-orm/pg-core";
-import { telegramUsers } from "./telegram-users";
+import { z } from "zod";
 
-export const cryptoPaymentMethods = pgTable("crypto_payment_methods", {
-  currencyCode: text("currency_code").primaryKey(),
-  network: text("network").notNull(),
-  address: text("address").notNull(),
-  updatedBy: bigint("updated_by", { mode: "number" }).notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow()
-    .$onUpdate(() => new Date()),
+export interface CryptoPaymentMethod {
+  currencyCode: string;
+  network: string;
+  address: string;
+  updatedBy: number;
+  updatedAt: Date;
+}
+
+export interface TopUpQuote {
+  _id?: any;
+  telegramId: number;
+  currencyCode: string;
+  network: string;
+  amountUsd: string;
+  exchangeRateUsd: string;
+  cryptoAmount: string;
+  depositAddress: string;
+  status: string;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
+export const insertCryptoPaymentMethodSchema = z.object({
+  currencyCode: z.string().min(1),
+  network: z.string().min(1),
+  address: z.string().min(1),
+  updatedBy: z.number(),
 });
 
-export const topUpQuotes = pgTable("top_up_quotes", {
-  id: serial("id").primaryKey(),
-  telegramId: bigint("telegram_id", { mode: "number" })
-    .notNull()
-    .references(() => telegramUsers.telegramId),
-  currencyCode: text("currency_code").notNull(),
-  network: text("network").notNull(),
-  amountUsd: numeric("amount_usd", { precision: 12, scale: 2 }).notNull(),
-  exchangeRateUsd: numeric("exchange_rate_usd", {
-    precision: 24,
-    scale: 10,
-  }).notNull(),
-  cryptoAmount: numeric("crypto_amount", {
-    precision: 32,
-    scale: 12,
-  }).notNull(),
-  depositAddress: text("deposit_address").notNull(),
-  status: text("status").notNull().default("quoted"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+export const insertTopUpQuoteSchema = z.object({
+  telegramId: z.number(),
+  currencyCode: z.string().min(1),
+  network: z.string().min(1),
+  amountUsd: z.string(),
+  exchangeRateUsd: z.string(),
+  cryptoAmount: z.string(),
+  depositAddress: z.string().min(1),
+  status: z.string().optional().default("quoted"),
+  expiresAt: z.date(),
 });
 
-export const insertCryptoPaymentMethodSchema = createInsertSchema(
-  cryptoPaymentMethods,
-).omit({ updatedAt: true });
-export const insertTopUpQuoteSchema = createInsertSchema(topUpQuotes).omit({
-  id: true,
-  createdAt: true,
-});
-
-export type InsertCryptoPaymentMethod = z.infer<
-  typeof insertCryptoPaymentMethodSchema
->;
+export type InsertCryptoPaymentMethod = z.infer<typeof insertCryptoPaymentMethodSchema>;
 export type InsertTopUpQuote = z.infer<typeof insertTopUpQuoteSchema>;
-export type CryptoPaymentMethod = typeof cryptoPaymentMethods.$inferSelect;
-export type TopUpQuote = typeof topUpQuotes.$inferSelect;
+export type CryptoPaymentMethodDoc = CryptoPaymentMethod;
+export type TopUpQuoteDoc = TopUpQuote;
