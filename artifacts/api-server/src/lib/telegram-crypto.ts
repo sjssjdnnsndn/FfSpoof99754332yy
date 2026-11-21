@@ -44,53 +44,60 @@ async function fetchCoinRates(): Promise<CachedRates> {
 
   refreshInProgress = (async () => {
     const ids = cryptoCurrencies.map((currency) => currency.coinGeckoId);
-    const query = new URLSearchParams({
-      ids: ids.join(","),
-      vs_currencies: "usd",
-      include_last_updated_at: "true",
-    });
-    const response = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?${query.toString()}`,
-      { signal: AbortSignal.timeout(8000) },
-    );
-
-    if (!response.ok) {
-      throw new CryptoQuoteError("rate_unavailable");
-    }
-
-    const prices = (await response.json()) as CoinGeckoPrices;
-    const rates = new Map<string, { usd: number; updatedAt: number }>();
     const now = Date.now();
-
-    for (const currency of cryptoCurrencies) {
-      const quote = prices[currency.coinGeckoId];
-      if (
-        !quote ||
-        typeof quote.usd !== "number" ||
-        !Number.isFinite(quote.usd) ||
-        quote.usd <= 0
-      ) {
-        continue;
+    // Try CoinGecko with retries + fallback to stale cache
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const query = new URLSearchParams({
+          ids: ids.join(","),
+          vs_currencies: "usd",
+          include_last_updated_at: "true",
+        });
+        const response = await fetch(
+          `https://api.coingecko.com/api/v3/simple/price?${query.toString()}`,
+          { signal: AbortSignal.timeout(15000), headers: { Accept: "application/json" } },
+        );
+        if (!response.ok) {
+          const txt = await response.text().catch(() => "");
+          throw new Error(`CoinGecko ${response.status} ${txt.slice(0,200)}`);
+        }
+        const prices = (await response.json()) as CoinGeckoPrices;
+        const rates = new Map<string, { usd: number; updatedAt: number }>();
+        for (const currency of cryptoCurrencies) {
+          const quote = prices[currency.coinGeckoId];
+          if (!quote || typeof quote.usd !== "number" || !Number.isFinite(quote.usd) || quote.usd <= 0) continue;
+          // Relaxed time check: accept data up to 1 hour old (Render clock skew, Coingecko delay)
+          const updatedAt = quote.last_updated_at ? quote.last_updated_at * 1000 : now;
+          if (now - updatedAt > 60 * 60_000) continue; // only reject if >1 hour old
+          rates.set(currency.code, { usd: quote.usd, updatedAt });
+        }
+        if (rates.size === 0) throw new Error("No rates parsed from CoinGecko");
+        const result = { expiresAt: now + 60_000, rates };
+        cachedRates = result;
+        return result;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // On first attempt failure, retry after 1s; on second, fallback to stale cache if exists
+        if (attempt === 1) {
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+        if (cachedRates && cachedRates.rates.size > 0) {
+          // Return stale cache to keep payments working during outage
+          return { ...cachedRates, expiresAt: now + 30_000 };
+        }
+        // Log for Render debugging
+        console.warn(`[crypto] fetchCoinRates failed after ${attempt} attempts: ${msg}`);
+        throw new CryptoQuoteError("rate_unavailable");
       }
-
-      const updatedAt = quote.last_updated_at
-        ? quote.last_updated_at * 1000
-        : now;
-      if (now - updatedAt > 5 * 60_000 || updatedAt - now > 2 * 60_000) {
-        continue;
-      }
-
-      rates.set(currency.code, { usd: quote.usd, updatedAt });
     }
-
-    const result = { expiresAt: now + 60_000, rates };
-    cachedRates = result;
-    return result;
+    throw new CryptoQuoteError("rate_unavailable");
   })();
 
   try {
     return await refreshInProgress;
-  } catch {
+  } catch (e) {
+    if (e instanceof CryptoQuoteError) throw e;
     throw new CryptoQuoteError("rate_unavailable");
   } finally {
     refreshInProgress = undefined;
